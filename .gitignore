@@ -1,0 +1,39 @@
+# Data — usually too large for git; commit metadata/manifests instead
+rawdata/
+data/
+output/
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+env/
+venv/
+*.egg-info/
+dist/
+build/
+.ipynb_checkpoints/
+.pytest_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Conda / pip
+*.egg
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Secrets — never commit these
+.env
+*.key
+*credentials*
