@@ -1,0 +1,535 @@
+---
+title: "Bulk RNA-seq Analysis — GSE168137 (5xFAD Alzheimer Mouse Model)"
+subtitle: "Systematic phenotyping across cortex, hippocampus, and four timepoints"
+author: "SLopezBegines"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-float: true
+    code-fold: true
+    code-tools: true
+    embed-resources: true
+    theme: cosmo
+    fig-width: 10
+    fig-height: 6
+    fig-dpi: 150
+execute:
+  warning: false
+  message: false
+  cache: true
+---
+
+# Overview
+
+This notebook analyses **GSE168137**, a comprehensive bulk RNA-seq dataset characterising
+the **5xFAD mouse model** of Alzheimer's disease (Forner et al., *Scientific Data* 2021).
+
+**Experimental design:**
+
+| Factor    | Levels                              |
+|-----------|-------------------------------------|
+| Genotype  | 5xFAD (transgenic) vs BL6 (WT)     |
+| Tissue    | Cortex, Hippocampus                 |
+| Age       | 4, 8, 12, 18 months                 |
+| Sex       | Female, Male                        |
+| Samples   | 192 total                           |
+
+The analysis follows five modular stages: (1) data import, (2) quality control,
+(3) normalisation and filtering, (4) dimensionality reduction (PCA + UMAP), and
+(5) differential expression with DESeq2 and edgeR. Results from both DE methods
+are directly compared.
+
+---
+
+# 1. Setup
+
+## 1.1 Parameters
+
+Adjust these variables to subset the experiment before running the notebook.
+Set `NULL` to keep all levels of that factor.
+
+```{r params}
+# ── Analysis parameters ──────────────────────────────────────────────────────
+# Set to NULL to keep all; use character/integer vectors to subset
+
+TISSUE_FILTER <- "cortex"           # "cortex" | "hippocampus" | NULL
+AGE_FILTER    <- NULL               # e.g. c(4, 8) | NULL (all timepoints)
+SEX_FILTER    <- NULL               # "Female" | "Male" | NULL
+
+# DE contrast: always 5xFAD vs BL6
+CONTRAST      <- c("genotype", "5xFAD", "BL6")
+
+# DESeq2 design (covariates on top of genotype)
+# If subsetting to a single tissue, drop tissue from the formula
+DE_DESIGN     <- ~ sex + age_months + genotype
+
+# LFC shrinkage method: "apeglm" (recommended) | "ashr"
+SHRINK_TYPE   <- "apeglm"
+
+# Output directory (relative to project root)
+output_path   <- "output"
+```
+
+## 1.2 Packages and helper functions
+
+```{r setup}
+#| cache: false
+source("../code/00_packages.R")
+source("../code/01_global_variables.R")
+source("../code/02_utils.R")
+source("../code/03_import.R")
+source("../code/04_qc.R")
+source("../code/05_normalization.R")
+source("../code/06_dimreduction.R")
+source("../code/07_de_analysis.R")
+
+# Ensure output directories exist
+create_directories(output_path)
+
+# Reset figure counter
+image_number <- 1
+```
+
+---
+
+# 2. Data Import
+
+```{r import}
+# Load raw counts and auto-parse sample metadata from column names
+data_raw <- load_counts(
+  count_file    = "../rawdata/GSE168137_countList.txt.gz",
+  strip_version = TRUE
+)
+
+counts_raw <- data_raw$counts
+meta_all   <- data_raw$metadata
+
+# Preview metadata
+knitr::kable(head(meta_all[, c("sample","genotype","tissue","age_months","sex")], 10),
+             caption = "Sample metadata (first 10 rows)")
+```
+
+```{r import-subset}
+# Subset to selected tissue / age / sex
+sub_data <- subset_experiment(
+  counts   = counts_raw,
+  metadata = meta_all,
+  tissue   = TISSUE_FILTER,
+  age      = AGE_FILTER,
+  sex      = SEX_FILTER
+)
+
+counts_sub <- sub_data$counts
+meta_sub   <- sub_data$metadata
+
+cat(sprintf("\nAnalysis subset: %d genes x %d samples\n",
+            nrow(counts_sub), ncol(counts_sub)))
+cat(sprintf("Genotypes: %s\n",  paste(unique(meta_sub$genotype),   collapse=", ")))
+cat(sprintf("Tissues:   %s\n",  paste(unique(meta_sub$tissue),     collapse=", ")))
+cat(sprintf("Ages:      %s\n",  paste(sort(unique(meta_sub$age_months)), collapse=", ")))
+cat(sprintf("Sexes:     %s\n",  paste(unique(meta_sub$sex),        collapse=", ")))
+```
+
+**Dataset:** The 5xFAD model carries five familial AD mutations and displays
+progressive amyloid pathology. Wild-type C57BL/6J littermates serve as controls.
+The count matrix contains raw read counts (integer, gene-level) aligned to
+GRCm38 with Ensembl gene IDs (version suffix stripped).
+
+---
+
+# 3. Quality Control
+
+## 3.1 Per-sample QC metrics
+
+```{r qc-compute}
+qc_df <- compute_qc_metrics(counts_sub, meta_sub)
+
+# Save QC table
+save_table(qc_df, "sample_QC_metrics", subdir = "QC")
+```
+
+```{r qc-library-size, fig.cap="Library sizes (total read counts) per sample. Samples below the dashed line (1 M reads) are flagged. Transparency indicates low-depth samples."}
+p_lib <- plot_library_size(qc_df)
+print(p_lib)
+save_plot("library_size", p_lib, width = 14, height = 6, subdir = "QC")
+```
+
+```{r qc-genes, fig.cap="Number of genes detected per sample (count > 0), grouped by genotype × tissue and faceted by age."}
+p_genes <- plot_genes_detected(qc_df)
+print(p_genes)
+save_plot("genes_detected", p_genes, width = 12, height = 5, subdir = "QC")
+```
+
+```{r qc-dist, fig.cap="Density of log10(library size) per group. Outlier samples appear as isolated peaks."}
+p_dist <- plot_library_distribution(qc_df)
+print(p_dist)
+save_plot("library_distribution", p_dist, width = 12, height = 4, subdir = "QC")
+```
+
+## 3.2 QC summary
+
+```{r qc-summary}
+flagged <- qc_summary(qc_df)
+```
+
+```{r qc-table}
+#| echo: false
+knitr::kable(
+  qc_df[, c("sample","genotype","tissue","age_months","sex",
+             "library_size","genes_detected","low_depth","low_coverage")],
+  caption = "QC metrics per sample"
+)
+```
+
+## 3.3 Sample correlation
+
+Inter-sample Pearson correlation on the top 1,000 most variable genes (log2 CPM).
+Samples should cluster by tissue and then genotype.
+
+```{r qc-correlation, fig.cap="Pearson correlation heatmap. Ideal bulk RNA-seq samples cluster by experimental group.", fig.width=10, fig.height=9}
+# Using log2(CPM+1) for the correlation — no normalisation model required here
+cpm_sub <- counts_to_cpm(counts_sub)
+
+p_cor <- plot_sample_correlation(cpm_sub, meta_sub, top_n = 1000, log_transform = TRUE)
+
+# Save as PDF (pheatmap returns a recordedplot)
+pdf(file.path(output_path, "figures", "QC",
+              sprintf("%03d_sample_correlation.pdf", image_number)),
+    width = 10, height = 9)
+print(p_cor)
+dev.off()
+image_number <- image_number + 1
+```
+
+---
+
+# 4. Normalisation and Filtering
+
+## 4.1 Gene-level pre-filtering
+
+Remove genes that do not reach a minimum CPM in at least the number of samples
+in the smallest group. This step reduces multiple-testing burden without
+discarding biologically informative genes.
+
+```{r filter}
+counts_filt <- filter_low_counts(
+  counts_sub,
+  min_cpm     = MIN_COUNT_CPM,
+  min_samples = MIN_SAMPLES_EXPRESSED,
+  min_total   = MIN_TOTAL_COUNTS
+)
+```
+
+## 4.2 Build DESeqDataSet and estimate size factors
+
+```{r dds-build}
+dds <- build_dds(counts_filt, meta_sub, design = DE_DESIGN)
+
+# Estimate size factors (needed for VST and normalization plots)
+dds <- DESeq2::estimateSizeFactors(dds)
+```
+
+```{r size-factors, fig.cap="DESeq2 size factors per sample. Values close to 1 indicate similar library composition. Large deviations suggest outlier samples or batch effects."}
+p_sf <- plot_size_factors(dds, meta_sub)
+print(p_sf)
+save_plot("size_factors", p_sf, width = 14, height = 5, subdir = "normalization")
+```
+
+## 4.3 Variance-stabilising transformation (VST)
+
+VST is applied for visualisation (PCA, UMAP, correlation heatmaps). Raw counts
+are used for the actual DE tests.
+
+```{r vst}
+vst_obj <- normalize_vst(dds, blind = TRUE)
+
+# Save checkpoint
+save_checkpoint(vst_obj, "vst")
+```
+
+```{r mean-variance, fig.cap="Mean-SD plot after VST normalisation. Successful VST produces a flat lowess line, indicating variance is no longer correlated with mean expression."}
+vsn::meanSdPlot(SummarizedExperiment::assay(vst_obj))
+```
+
+---
+
+# 5. Dimensionality Reduction
+
+## 5.1 PCA
+
+PCA is computed on the `r N_TOP_GENES_PCA` most variable genes after VST normalisation.
+
+```{r pca-run}
+pca_res <- run_pca(vst_obj, n_top = N_TOP_GENES_PCA, n_pcs = N_PCS)
+```
+
+```{r scree, fig.cap="Scree plot: proportion of variance captured by each PC. The elbow indicates where signal transitions to noise."}
+p_scree <- plot_scree(pca_res$var_explained, n_show = 20)
+print(p_scree)
+save_plot("PCA_scree", p_scree, width = 8, height = 5, subdir = "PCA")
+```
+
+```{r pca-grid, fig.cap="PCA coloured by experimental covariates. Separation along PC1/PC2 identifies the dominant sources of variation.", fig.width=12, fig.height=8}
+p_pca_grid <- plot_embedding_grid(
+  embed_df      = pca_res$pca_df,
+  x_col         = "PC1", y_col = "PC2",
+  var_explained = pca_res$var_explained
+)
+print(p_pca_grid)
+save_plot("PCA_grid_covariates", p_pca_grid, width = 12, height = 8, subdir = "PCA")
+```
+
+```{r pca-genotype, fig.cap="PC1 vs PC2 coloured by genotype. Separation between 5xFAD and BL6 confirms the transcriptional effect of the transgene."}
+p_pca_geno <- plot_pca(pca_res$pca_df, pca_res$var_explained,
+                        colour_by = "genotype", shape_by = "sex",
+                        palette = GENOTYPE_COLORS)
+print(p_pca_geno)
+save_plot("PCA_genotype", p_pca_geno, width = 7, height = 6, subdir = "PCA")
+```
+
+```{r pca-age, fig.cap="PC1 vs PC2 coloured by age. Age-related progression is visible if samples separate along a temporal axis."}
+p_pca_age <- plot_pca(pca_res$pca_df, pca_res$var_explained,
+                       colour_by = "age_months", shape_by = "genotype",
+                       palette = AGE_COLORS)
+print(p_pca_age)
+save_plot("PCA_age", p_pca_age, width = 7, height = 6, subdir = "PCA")
+```
+
+## 5.2 UMAP
+
+UMAP further separates the sample structure using the top `r N_PCS_UMAP` PCs.
+A fixed seed ensures reproducibility.
+
+```{r umap-run}
+umap_df <- run_umap(pca_res, n_pcs = N_PCS_UMAP)
+```
+
+```{r umap-grid, fig.cap="UMAP coloured by experimental covariates.", fig.width=12, fig.height=8}
+p_umap_grid <- plot_embedding_grid(umap_df, x_col = "UMAP1", y_col = "UMAP2")
+print(p_umap_grid)
+save_plot("UMAP_grid_covariates", p_umap_grid, width = 12, height = 8, subdir = "UMAP")
+```
+
+```{r umap-genotype, fig.cap="UMAP coloured by genotype."}
+p_umap_geno <- plot_umap(umap_df, colour_by = "genotype", shape_by = "tissue",
+                          palette = GENOTYPE_COLORS)
+print(p_umap_geno)
+save_plot("UMAP_genotype", p_umap_geno, width = 7, height = 6, subdir = "UMAP")
+```
+
+```{r umap-age, fig.cap="UMAP coloured by age (months). A trajectory from left to right reflects progressive disease."}
+p_umap_age <- plot_umap(umap_df, colour_by = "age_months", shape_by = "genotype",
+                         palette = AGE_COLORS)
+print(p_umap_age)
+save_plot("UMAP_age", p_umap_age, width = 7, height = 6, subdir = "UMAP")
+```
+
+---
+
+# 6. Differential Expression — DESeq2
+
+## 6.1 Model and contrast
+
+We compare **5xFAD vs BL6** (reference), adjusting for sex and age as covariates.
+A gene is called significant at padj < `r P_VAL_THRESH` and |log2FC| ≥ `r FC_THRESH`.
+
+```{r deseq2-run}
+#| cache: true
+if (check_checkpoint("deseq2_res")) {
+  deseq2_res <- load_checkpoint("deseq2_res")
+} else {
+  # Rebuild dds with design (not blind) for DE
+  dds_de <- build_dds(counts_filt, meta_sub, design = DE_DESIGN)
+  deseq2_res <- run_deseq2(dds_de, contrast = CONTRAST, shrink_type = SHRINK_TYPE)
+  save_checkpoint(deseq2_res, "deseq2_res")
+}
+
+# Save full results table
+save_table(deseq2_res, "DESeq2_5xFAD_vs_BL6", subdir = "DE")
+```
+
+## 6.2 Results summary
+
+```{r deseq2-summary}
+n_up   <- sum(deseq2_res$direction == "UP",   na.rm = TRUE)
+n_down <- sum(deseq2_res$direction == "DOWN",  na.rm = TRUE)
+cat(sprintf("DESeq2 significant DE genes:\n  UP:   %d\n  DOWN: %d\n  Total: %d\n",
+            n_up, n_down, n_up + n_down))
+
+knitr::kable(
+  head(deseq2_res[deseq2_res$significant, c("gene","baseMean","log2FoldChange","lfcSE","padj","direction")], 20),
+  caption = "Top 20 DESeq2 significant genes (ranked by padj)"
+)
+```
+
+## 6.3 Volcano plot
+
+```{r deseq2-volcano, fig.cap="DESeq2 volcano plot. Red: upregulated in 5xFAD; blue: downregulated. Dashed lines mark padj=0.05 and |log2FC|=1."}
+p_volc_d2 <- plot_volcano(deseq2_res,
+                            title   = "5xFAD vs BL6 — DESeq2",
+                            lfc_col = "log2FoldChange", pval_col = "padj")
+print(p_volc_d2)
+save_plot("DESeq2_volcano", p_volc_d2, width = 8, height = 7, subdir = "DE/DESeq2")
+```
+
+## 6.4 MA plot
+
+```{r deseq2-ma, fig.cap="DESeq2 MA plot. Genes with high average expression generally have well-estimated fold-changes. The apeglm shrinkage pulls extreme LFC estimates towards zero for lowly expressed genes."}
+p_ma_d2 <- plot_ma(deseq2_res, title = "5xFAD vs BL6 — DESeq2 (apeglm shrinkage)",
+                    lfc_col = "log2FoldChange", mean_col = "baseMean")
+print(p_ma_d2)
+save_plot("DESeq2_MA", p_ma_d2, width = 8, height = 6, subdir = "DE/DESeq2")
+```
+
+## 6.5 Heatmap of top DE genes
+
+```{r deseq2-heatmap, fig.cap="Heatmap of top 50 DESeq2 DE genes (z-scored VST expression). Columns annotated by genotype, tissue, age, and sex.", fig.height=10}
+# Rebuild VST with blind=FALSE for DE-focused heatmap
+vst_de <- normalize_vst(build_dds(counts_filt, meta_sub, design = DE_DESIGN),
+                         blind = FALSE)
+
+p_hm_d2 <- plot_de_heatmap(deseq2_res, vst_de, meta_sub,
+                             n_top = 50, title = "Top 50 DE genes — DESeq2")
+save_plot("DESeq2_heatmap_top50", p_hm_d2, width = 12, height = 10, subdir = "DE/DESeq2")
+```
+
+---
+
+# 7. Differential Expression — edgeR
+
+## 7.1 Model and contrast
+
+edgeR uses TMM normalisation and a quasi-likelihood F-test for the same
+5xFAD vs BL6 contrast. We pass the same design formula to ensure comparability.
+
+```{r edger-run}
+#| cache: true
+if (check_checkpoint("edger_res")) {
+  edger_res <- load_checkpoint("edger_res")
+} else {
+  edger_res <- run_edger(
+    counts         = counts_filt,
+    metadata       = meta_sub,
+    design_formula = DE_DESIGN,
+    contrast_col   = "genotype",
+    numerator      = "5xFAD",
+    denominator    = "BL6"
+  )
+  save_checkpoint(edger_res, "edger_res")
+}
+
+save_table(edger_res, "edgeR_5xFAD_vs_BL6", subdir = "DE")
+```
+
+## 7.2 Results summary
+
+```{r edger-summary}
+n_up_er   <- sum(edger_res$direction == "UP",   na.rm = TRUE)
+n_down_er <- sum(edger_res$direction == "DOWN",  na.rm = TRUE)
+cat(sprintf("edgeR significant DE genes:\n  UP:   %d\n  DOWN: %d\n  Total: %d\n",
+            n_up_er, n_down_er, n_up_er + n_down_er))
+
+knitr::kable(
+  head(edger_res[edger_res$significant, c("gene","logFC","logCPM","F","PValue","FDR","direction")], 20),
+  caption = "Top 20 edgeR significant genes (ranked by PValue)"
+)
+```
+
+## 7.3 Volcano plot
+
+```{r edger-volcano, fig.cap="edgeR volcano plot. Same thresholds as DESeq2 for direct visual comparison."}
+p_volc_er <- plot_volcano(edger_res,
+                           title   = "5xFAD vs BL6 — edgeR",
+                           lfc_col = "logFC", pval_col = "FDR")
+print(p_volc_er)
+save_plot("edgeR_volcano", p_volc_er, width = 8, height = 7, subdir = "DE/edgeR")
+```
+
+## 7.4 MA plot
+
+```{r edger-ma, fig.cap="edgeR MA plot (logFC vs average logCPM across all samples)."}
+p_ma_er <- plot_ma(edger_res, title = "5xFAD vs BL6 — edgeR",
+                    lfc_col = "logFC", mean_col = "logCPM")
+print(p_ma_er)
+save_plot("edgeR_MA", p_ma_er, width = 8, height = 6, subdir = "DE/edgeR")
+```
+
+## 7.5 Heatmap of top DE genes
+
+```{r edger-heatmap, fig.cap="Top 50 edgeR DE genes (z-scored VST expression).", fig.height=10}
+p_hm_er <- plot_de_heatmap(edger_res, vst_de, meta_sub,
+                             n_top = 50, title = "Top 50 DE genes — edgeR")
+save_plot("edgeR_heatmap_top50", p_hm_er, width = 12, height = 10, subdir = "DE/edgeR")
+```
+
+---
+
+# 8. DESeq2 vs edgeR Comparison
+
+A key quality check: results from DESeq2 and edgeR should be highly concordant
+for a well-powered dataset. Discordances often reflect differences in how each
+method handles dispersion estimation at extreme count values.
+
+## 8.1 Gene overlap
+
+```{r compare-venn}
+merged_de <- merge_de_results(deseq2_res, edger_res)
+overlap    <- venn_de_overlap(merged_de)
+
+save_table(merged_de, "DESeq2_edgeR_merged", subdir = "DE")
+```
+
+## 8.2 LFC correlation
+
+```{r compare-lfc, fig.cap="Scatter plot of log2FC estimates from DESeq2 (x) vs edgeR (y). The diagonal dashed line represents perfect agreement. Pearson r is shown."}
+p_lfc_comp <- plot_lfc_comparison(merged_de)
+print(p_lfc_comp)
+save_plot("comparison_LFC", p_lfc_comp, width = 7, height = 6, subdir = "DE/comparison")
+```
+
+## 8.3 Adjusted p-value ranks
+
+```{r compare-pval, fig.cap="Rank-rank comparison of adjusted p-values. DESeq2 padj (x) vs edgeR FDR (y). Points near the diagonal indicate consistent gene-level rankings."}
+p_pval_comp <- plot_pval_comparison(merged_de)
+print(p_pval_comp)
+save_plot("comparison_pval_ranks", p_pval_comp, width = 7, height = 6,
+          subdir = "DE/comparison")
+```
+
+## 8.4 Side-by-side volcano plots
+
+```{r compare-volcanos, fig.cap="Volcano plots from both methods side-by-side for direct comparison.", fig.width=14, fig.height=6}
+(p_volc_d2 + ggtitle("DESeq2")) | (p_volc_er + ggtitle("edgeR"))
+```
+
+## 8.5 Concordant gene list
+
+```{r concordant-genes}
+concordant_genes <- merged_de$gene[
+  !is.na(merged_de$agreement) & merged_de$agreement == "Concordant"]
+
+cat(sprintf("Concordant significant genes: %d\n", length(concordant_genes)))
+
+concordant_df <- merged_de[merged_de$agreement == "Concordant",
+  c("gene", "log2FoldChange_deseq2", "padj_deseq2",
+    "logFC_edger", "FDR_edger", "direction_deseq2")]
+concordant_df <- concordant_df[order(concordant_df$padj_deseq2), ]
+
+knitr::kable(
+  head(concordant_df, 30),
+  caption = "Top 30 concordant DE genes (ranked by DESeq2 padj)"
+)
+
+save_table(concordant_df, "concordant_DE_genes", subdir = "DE")
+```
+
+---
+
+# 9. Session Information
+
+```{r session-info}
+#| cache: false
+sessionInfo()
+```
