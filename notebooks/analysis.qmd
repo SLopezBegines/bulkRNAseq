@@ -54,7 +54,7 @@ Set `NULL` to keep all levels of that factor.
 # ── Analysis parameters ──────────────────────────────────────────────────────
 # Set to NULL to keep all; use character/integer vectors to subset
 
-TISSUE_FILTER <- "cortex"           # "cortex" | "hippocampus" | NULL
+TISSUE_FILTER <- NULL           # "cortex" | "hippocampus" | NULL
 AGE_FILTER    <- NULL               # e.g. c(4, 8) | NULL (all timepoints)
 SEX_FILTER    <- NULL               # "Female" | "Male" | NULL
 
@@ -108,8 +108,31 @@ meta_all   <- data_raw$metadata
 
 # Preview metadata
 knitr::kable(head(meta_all[, c("sample","genotype","tissue","age_months","sex")], 10),
-             caption = "Sample metadata (first 10 rows)")
+             caption = "Sample metadata (first 10 rows)") |> kableExtra::kable_paper()
 ```
+
+## Add gene names from Ensemble ID
+
+```{r}
+ensembl_ids <- rownames(counts_raw)
+
+library(AnnotationDbi)
+library(org.Mm.eg.db)
+
+# Build Ensembl ID -> gene symbol mapping table
+gene_map <- AnnotationDbi::select(
+  org.Mm.eg.db,
+  keys    = ensembl_ids,
+  columns = c("ENSEMBL", "SYMBOL"),
+  keytype = "ENSEMBL"
+)
+
+# Fall back to original Ensembl ID for any unmapped genes
+gene_map$SYMBOL[is.na(gene_map$SYMBOL)] <- gene_map$ENSEMBL[is.na(gene_map$SYMBOL)]
+# Apply mapping to counts matrix
+rownames(counts_raw) <- gene_map$SYMBOL[match(rownames(counts_raw), gene_map$ENSEMBL)] 
+```
+
 
 ```{r import-subset}
 # Subset to selected tissue / age / sex
@@ -146,6 +169,9 @@ GRCm38 with Ensembl gene IDs (version suffix stripped).
 ```{r qc-compute}
 qc_df <- compute_qc_metrics(counts_sub, meta_sub)
 
+# Print samples with low library size or low gene detection
+qc_df |> filter(low_depth | low_coverage) |> dplyr::select(sample, low_depth, low_coverage) |> knitr::kable(
+  caption = paste0("Samples flagged for low library size (< ",QC_MIN_LIBRARY_SIZE," reads) or low gene detection (< ", QC_MIN_GENES_DETECTED," genes).")) |> kableExtra::kable_paper()
 # Save QC table
 save_table(qc_df, "sample_QC_metrics", subdir = "QC")
 ```
@@ -180,7 +206,7 @@ knitr::kable(
   qc_df[, c("sample","genotype","tissue","age_months","sex",
              "library_size","genes_detected","low_depth","low_coverage")],
   caption = "QC metrics per sample"
-)
+) |> kableExtra::kable_paper()
 ```
 
 ## 3.3 Sample correlation
@@ -361,7 +387,7 @@ cat(sprintf("DESeq2 significant DE genes:\n  UP:   %d\n  DOWN: %d\n  Total: %d\n
 knitr::kable(
   head(deseq2_res[deseq2_res$significant, c("gene","baseMean","log2FoldChange","lfcSE","padj","direction")], 20),
   caption = "Top 20 DESeq2 significant genes (ranked by padj)"
-)
+) |> kableExtra::kable_paper()
 ```
 
 ## 6.3 Volcano plot
@@ -520,7 +546,7 @@ concordant_df <- concordant_df[order(concordant_df$padj_deseq2), ]
 knitr::kable(
   head(concordant_df, 30),
   caption = "Top 30 concordant DE genes (ranked by DESeq2 padj)"
-)
+) |> kableExtra::kable_paper()
 
 save_table(concordant_df, "concordant_DE_genes", subdir = "DE")
 ```
