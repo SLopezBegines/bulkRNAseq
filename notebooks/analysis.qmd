@@ -155,6 +155,17 @@ cat(sprintf("Ages:      %s\n",  paste(sort(unique(meta_sub$age_months)), collaps
 cat(sprintf("Sexes:     %s\n",  paste(unique(meta_sub$sex),        collapse=", ")))
 ```
 
+```{r tissue-guard}
+# Guard: multiple tissues require a tissue term in the design (Issue 1)
+n_tissues <- length(unique(meta_sub$tissue))
+if (n_tissues > 1 && !grepl("tissue", deparse(DE_DESIGN))) {
+  stop(
+    "Multiple tissues in the subset but 'tissue' is not in DE_DESIGN. ",
+    "Either set TISSUE_FILTER to a single tissue, or add '+ tissue' to DE_DESIGN."
+  )
+}
+```
+
 **Dataset:** The 5xFAD model carries five familial AD mutations and displays
 progressive amyloid pathology. Wild-type C57BL/6J littermates serve as controls.
 The count matrix contains raw read counts (integer, gene-level) aligned to
@@ -550,6 +561,17 @@ knitr::kable(
 
 save_table(concordant_df, "concordant_DE_genes", subdir = "DE")
 ```
+
+## 8.6 Multiple-testing note (Issue 7)
+
+> **Note:** Each DE run above applies Benjamini-Hochberg correction within a
+> single contrast (~18 k genes). When the analysis is extended to multiple
+> strata (e.g. cortex + hippocampus separately, or per-timepoint contrasts),
+> the per-stratum FDR is controlled independently but the family-wise error
+> rate across contrasts is not. If a combined gene list is produced from
+> several strata or contrasts, apply a second-level p-value adjustment
+> (e.g. `p.adjust(all_padjs, method = "BH")`) across contrasts before
+> reporting the union set.
 
 ---
 

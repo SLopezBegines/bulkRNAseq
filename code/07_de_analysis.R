@@ -1,8 +1,6 @@
-# ==============================================================================
 # Differential Expression Analysis — bulkRNAseq Pipeline
 # DESeq2 (primary) and edgeR (alternative), with cross-method comparison
 # Adapted from snRNAseq_mouse/code/03_vulcano_plots.R
-# ==============================================================================
 
 # 1. DESeq2 --------------------------------------------------------------------
 
@@ -11,9 +9,9 @@
 #' @param dds         DESeqDataSet (from build_dds(); genes already filtered)
 #' @param contrast    Character vector of length 3: c("variable", "numerator", "denominator")
 #'                    e.g. c("genotype", "5xFAD", "BL6")
-#' @param lfc_thresh  lfcShrink shrinkage only; hard threshold applied post-hoc
 #' @param shrink_type LFC shrinkage method: "apeglm" (recommended) | "ashr" | "normal"
-#' @returns data.frame with gene, baseMean, log2FoldChange, lfcSE, pvalue, padj,
+#' @returns data.frame with gene, baseMean, log2FoldChange (shrunken), log2FoldChange_MLE,
+#'          lfcSE, padj (|LFC|>FC_THRESH Wald test), svalue (apeglm only),
 #'          direction, significant
 run_deseq2 <- function(dds, contrast = c("genotype", "5xFAD", "BL6"),
                        shrink_type = "apeglm") {
@@ -27,13 +25,17 @@ run_deseq2 <- function(dds, contrast = c("genotype", "5xFAD", "BL6"),
   if (shrink_type == "apeglm") {
     coef_name <- paste0(contrast[1], "_", contrast[2], "_vs_", contrast[3])
     coef_name <- gsub(";", ".", coef_name) # DESeq2 replaces ; with .
-    res_raw <- DESeq2::results(dds, name = coef_name, alpha = P_VAL_THRESH)
+    # Test |LFC| > FC_THRESH directly; padj from this call encodes the lfcThreshold hypothesis
+    res_raw <- DESeq2::results(dds, name = coef_name, alpha = P_VAL_THRESH,
+      lfcThreshold = FC_THRESH, altHypothesis = "greaterAbs")
+    # lfcShrink with lfcThreshold returns svalue — apeglm FDR for |LFC| > FC_THRESH
     res <- DESeq2::lfcShrink(dds,
       coef = coef_name, type = "apeglm",
-      res = res_raw, quiet = TRUE
+      lfcThreshold = FC_THRESH, res = res_raw, quiet = TRUE
     )
   } else {
-    res_raw <- DESeq2::results(dds, contrast = contrast, alpha = P_VAL_THRESH)
+    res_raw <- DESeq2::results(dds, contrast = contrast, alpha = P_VAL_THRESH,
+      lfcThreshold = FC_THRESH, altHypothesis = "greaterAbs")
     res <- DESeq2::lfcShrink(dds,
       contrast = contrast, type = shrink_type,
       res = res_raw, quiet = TRUE
@@ -42,9 +44,20 @@ run_deseq2 <- function(dds, contrast = c("genotype", "5xFAD", "BL6"),
 
   res_df <- as.data.frame(res)
   res_df$gene <- rownames(res_df)
+  # apeglm lfcShrink with lfcThreshold replaces padj with svalue; restore padj for volcano
+  if (!"padj" %in% names(res_df)) {
+    res_df$padj <- res_raw$padj[match(rownames(res_df), rownames(res_raw))]
+  }
+  # Retain unshrunken MLE LFC for fair cross-method comparison (shrunken vs unshrunken is not a DESeq2/edgeR difference)
+  res_df$log2FoldChange_MLE <- res_raw$log2FoldChange[match(rownames(res_df), rownames(res_raw))]
 
-  res_df$significant <- !is.na(res_df$padj) &
-    res_df$padj < P_VAL_THRESH & abs(res_df$log2FoldChange) >= FC_THRESH
+  # Significance: svalue for apeglm (resolves Issue 5); padj for other shrinkage types.
+  # Both now test |LFC| > FC_THRESH — no redundant post-hoc |LFC| filter.
+  if (shrink_type == "apeglm") {
+    res_df$significant <- !is.na(res_df$svalue) & res_df$svalue < P_VAL_THRESH
+  } else {
+    res_df$significant <- !is.na(res_df$padj) & res_df$padj < P_VAL_THRESH
+  }
   res_df$direction <- ifelse(
     res_df$significant & res_df$log2FoldChange > 0, "UP",
     ifelse(res_df$significant & res_df$log2FoldChange < 0, "DOWN", "NS")
@@ -53,7 +66,7 @@ run_deseq2 <- function(dds, contrast = c("genotype", "5xFAD", "BL6"),
   n_up <- sum(res_df$direction == "UP", na.rm = TRUE)
   n_down <- sum(res_df$direction == "DOWN", na.rm = TRUE)
   message(sprintf(
-    "[DESeq2] DE genes: %d UP, %d DOWN (padj<%.2f, |LFC|>=%.1f)",
+    "[DESeq2] DE genes: %d UP, %d DOWN (svalue/padj<%.2f, |LFC|>%.1f threshold-tested)",
     n_up, n_down, P_VAL_THRESH, FC_THRESH
   ))
 
@@ -83,6 +96,10 @@ run_edger <- function(counts, metadata,
     factor(metadata[[contrast_col]]),
     ref = denominator
   )
+  # Match build_dds(): 5xFAD pathology is non-linear with age, so treat as factor in both methods
+  if ("age_months" %in% all.vars(design_formula)) {
+    metadata$age_months <- factor(metadata$age_months)
+  }
 
   design <- model.matrix(design_formula, data = metadata)
 
@@ -95,16 +112,20 @@ run_edger <- function(counts, metadata,
   tictoc::toc()
 
   # Coefficient for the contrast (last column of design matrix = numerator level)
-  coef_name <- paste0(contrast_col, numerator)
-  qlf <- edgeR::glmQLFTest(fit, coef = coef_name)
+  geno_cols <- grep(paste0("^", contrast_col), colnames(design), value = TRUE)
+  stopifnot(length(geno_cols) == 1)
+  coef_name <- geno_cols
+  # glmTreat tests |LFC| > FC_THRESH directly (TREAT; FDR-controlled for effect-size)
+  qlf <- edgeR::glmTreat(fit, coef = coef_name, lfc = FC_THRESH)
 
   res_df <- edgeR::topTags(qlf,
     n = Inf, adjust.method = "BH",
     sort.by = "PValue"
   )$table
   res_df$gene <- rownames(res_df)
+  if (!"F" %in% names(res_df)) res_df$F <- NA_real_  # glmTreat uses LR, not F
 
-  res_df$significant <- res_df$FDR < P_VAL_THRESH & abs(res_df$logFC) >= FC_THRESH
+  res_df$significant <- res_df$FDR < P_VAL_THRESH  # no redundant |LFC| post-filter
   res_df$direction <- ifelse(
     res_df$significant & res_df$logFC > 0, "UP",
     ifelse(res_df$significant & res_df$logFC < 0, "DOWN", "NS")
@@ -113,7 +134,7 @@ run_edger <- function(counts, metadata,
   n_up <- sum(res_df$direction == "UP", na.rm = TRUE)
   n_down <- sum(res_df$direction == "DOWN", na.rm = TRUE)
   message(sprintf(
-    "[edgeR] DE genes: %d UP, %d DOWN (FDR<%.2f, |LFC|>=%.1f)",
+    "[edgeR] DE genes: %d UP, %d DOWN (FDR<%.2f, |LFC|>%.1f threshold-tested)",
     n_up, n_down, P_VAL_THRESH, FC_THRESH
   ))
 
@@ -268,8 +289,8 @@ plot_de_heatmap <- function(res_df, vst_obj, metadata,
 #' @param edger_res    Output of run_edger()
 #' @returns Merged data.frame with columns from both methods, suffixed _deseq2 and _edger
 merge_de_results <- function(deseq2_res, edger_res) {
-  d2 <- deseq2_res[, c("gene", "log2FoldChange", "padj", "significant", "direction")]
-  names(d2)[2:5] <- paste0(names(d2)[2:5], "_deseq2")
+  d2 <- deseq2_res[, c("gene", "log2FoldChange", "log2FoldChange_MLE", "padj", "significant", "direction")]
+  names(d2)[2:6] <- paste0(names(d2)[2:6], "_deseq2")
 
   er <- edger_res[, c("gene", "logFC", "FDR", "significant", "direction")]
   names(er)[2:5] <- paste0(names(er)[2:5], "_edger")
@@ -286,15 +307,15 @@ merge_de_results <- function(deseq2_res, edger_res) {
 }
 
 #' Scatter plot comparing log2FC estimates from DESeq2 and edgeR
-plot_lfc_comparison <- function(merged_df, title = "DESeq2 vs edgeR: log2FC") {
-  df <- merged_df[!is.na(merged_df$log2FoldChange_deseq2) &
+plot_lfc_comparison <- function(merged_df, title = "DESeq2 vs edgeR: unshrunken log2FC (MLE)") {
+  df <- merged_df[!is.na(merged_df$log2FoldChange_MLE_deseq2) &
     !is.na(merged_df$logFC_edger), ]
-  cor_val <- round(cor(df$log2FoldChange_deseq2, df$logFC_edger,
+  cor_val <- round(cor(df$log2FoldChange_MLE_deseq2, df$logFC_edger,
     use = "complete.obs"
   ), 3)
   colors <- c("Concordant" = "#4DAF4A", "Method-specific" = "#FF7F00", "NS" = "grey80")
 
-  ggplot(df, aes(x = log2FoldChange_deseq2, y = logFC_edger, colour = agreement)) +
+  ggplot(df, aes(x = log2FoldChange_MLE_deseq2, y = logFC_edger, colour = agreement)) +
     geom_point(size = 1, alpha = 0.4) +
     geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
     geom_smooth(method = "lm", se = FALSE, colour = "black", linewidth = 0.6) +
@@ -305,8 +326,8 @@ plot_lfc_comparison <- function(merged_df, title = "DESeq2 vs edgeR: log2FC") {
     ) +
     labs(
       title  = title,
-      x      = expression(log[2] ~ "FC (DESeq2)"),
-      y      = expression(log[2] ~ "FC (edgeR)"),
+      x      = expression(log[2] ~ "FC (DESeq2, unshrunken MLE)"),
+      y      = expression(log[2] ~ "FC (edgeR, unshrunken)"),
       colour = "Status"
     ) +
     BASE_THEME
@@ -332,6 +353,13 @@ venn_de_overlap <- function(merged_df) {
 
   invisible(list(deseq2_only = only_d2, edger_only = only_er, shared = shared))
 }
+
+# 5. Deferred: surrogate variable / hidden-batch analysis ----------------------
+# Issue 6 — With 192 samples across many animals, technical structure not
+# captured by sex/age/tissue/genotype is likely. A future module (code/09_batch.R)
+# should estimate surrogate variables via sva::svaseq or RUVSeq and append them
+# to the design formula. Deferred: implement as an optional, parameter-gated step
+# outside the default path; document as exploratory until validated.
 
 #' P-value rank comparison plot: DESeq2 padj vs edgeR FDR (ranked)
 plot_pval_comparison <- function(merged_df, title = "Adjusted p-value ranks: DESeq2 vs edgeR") {

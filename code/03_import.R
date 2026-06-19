@@ -86,11 +86,12 @@ load_counts <- function(count_file, strip_version = TRUE) {
 #' @param age       Integer vector of ages to keep, e.g. c(4, 8) | NULL (keep all)
 #' @param sex       "Female" | "Male" | NULL (keep both)
 #' @returns List with filtered counts and metadata
-subset_experiment <- function(counts, metadata, tissue = NULL, age = NULL, sex = NULL) {
+subset_experiment <- function(counts, metadata, tissue = NULL, age = NULL, sex = NULL, genotype = NULL) {
   keep <- rep(TRUE, nrow(metadata))
-  if (!is.null(tissue)) keep <- keep & metadata$tissue     %in% tissue
-  if (!is.null(age))    keep <- keep & metadata$age_months %in% age
-  if (!is.null(sex))    keep <- keep & metadata$sex        %in% sex
+  if (!is.null(tissue))   keep <- keep & metadata$tissue     %in% tissue
+  if (!is.null(age))      keep <- keep & metadata$age_months %in% age
+  if (!is.null(sex))      keep <- keep & metadata$sex        %in% sex
+  if (!is.null(genotype)) keep <- keep & metadata$genotype   %in% genotype
 
   n_before <- ncol(counts)
   counts   <- counts[, keep, drop = FALSE]
@@ -107,8 +108,8 @@ subset_experiment <- function(counts, metadata, tissue = NULL, age = NULL, sex =
 #' @returns DESeqDataSet object
 build_dds <- function(counts, metadata, design = ~ genotype) {
   stopifnot(all(colnames(counts) == rownames(metadata)))
-  # Relevel: BL6 (wildtype) as reference for genotype
-  if ("genotype" %in% all.vars(design)) {
+  # Relevel: BL6 (wildtype) as reference for genotype; leave alone if already a factor
+  if ("genotype" %in% all.vars(design) && !is.factor(metadata$genotype)) {
     metadata$genotype <- factor(metadata$genotype, levels = c("BL6", "5xFAD"))
   }
   if ("tissue" %in% all.vars(design)) {
@@ -117,8 +118,12 @@ build_dds <- function(counts, metadata, design = ~ genotype) {
   if ("sex" %in% all.vars(design)) {
     metadata$sex <- factor(metadata$sex)
   }
+  # Respect AGE_AS_FACTOR global (default TRUE); 5xFAD pathology is non-linear with age
   if ("age_months" %in% all.vars(design)) {
-    metadata$age_months <- factor(metadata$age_months)
+    use_factor <- isTRUE(get0("AGE_AS_FACTOR", ifnotfound = TRUE))
+    if (use_factor && !is.factor(metadata$age_months)) {
+      metadata$age_months <- factor(metadata$age_months)
+    }
   }
   dds <- DESeqDataSetFromMatrix(
     countData = counts,

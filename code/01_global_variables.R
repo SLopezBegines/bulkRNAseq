@@ -17,6 +17,7 @@ keyType        <- "ENSEMBL"
 P_VAL_THRESH   <- 0.05   # Adjusted p-value cutoff for DE significance
 FC_THRESH      <- 1.0    # |log2 fold-change| cutoff for DE significance
 P_VAL_STRICT   <- 0.01   # Stricter threshold for highlighting top hits
+AGE_AS_FACTOR  <- TRUE   # Treat age_months as factor in DE models (non-linear 5xFAD pathology)
 
 # --- Bulk RNA-seq filtering thresholds ----------------------------------------
 # Applied during gene-level pre-filtering (before DESeq2/edgeR)
