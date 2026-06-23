@@ -38,7 +38,9 @@ cran_packages <- c(
   # I/O
   "readxl", "writexl",
   # Utilities
-  "tictoc", "remotes"
+  "tictoc", "remotes",
+  "kableExtra",
+  "R.utils"
 )
 load_pkgs(cran_packages)
 
@@ -54,7 +56,8 @@ bioc_packages <- paste0("bioc::", c(
   "BiocParallel",
   "SummarizedExperiment",
   "ggbio",
-  "apeglm"
+  "apeglm",
+  "vsn"
 ))
 load_pkgs(bioc_packages)
 

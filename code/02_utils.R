@@ -1,7 +1,5 @@
-# ==============================================================================
 # Utility Functions — bulkRNAseq Pipeline
 # Ported and adapted from snRNAseq_mouse/code/01_aux_functions.R
-# ==============================================================================
 
 # 1. CHECKPOINT SYSTEM ---------------------------------------------------------
 # Enables crash recovery: save progress -> reload on restart.

@@ -1,7 +1,5 @@
-# ==============================================================================
 # QC Functions — bulkRNAseq Pipeline
 # Library size, gene detection, sample correlation, and summary reporting
-# ==============================================================================
 
 #' Compute per-sample QC metrics from a raw count matrix
 #'

@@ -30,7 +30,7 @@ the **5xFAD mouse model** of Alzheimer's disease (Forner et al., *Scientific Dat
 
 | Factor    | Levels                              |
 |-----------|-------------------------------------|
-| Genotype  | 5xFAD (transgenic) vs BL6 (WT)     |
+| Genotype  | 5xFAD (transgenic) vs BL6 (WT)      |
 | Tissue    | Cortex, Hippocampus                 |
 | Age       | 4, 8, 12, 18 months                 |
 | Sex       | Female, Male                        |
@@ -42,6 +42,10 @@ The analysis follows five modular stages: (1) data import, (2) quality control,
 are directly compared.
 
 ---
+```{r config qmd}
+
+```
+
 
 # 1. Setup
 
@@ -63,7 +67,7 @@ CONTRAST      <- c("genotype", "5xFAD", "BL6")
 
 # DESeq2 design (covariates on top of genotype)
 # If subsetting to a single tissue, drop tissue from the formula
-DE_DESIGN     <- ~ sex + age_months + genotype
+DE_DESIGN     <- ~ sex + age_months + genotype + tissue
 
 # LFC shrinkage method: "apeglm" (recommended) | "ashr"
 SHRINK_TYPE   <- "apeglm"
@@ -114,8 +118,11 @@ knitr::kable(head(meta_all[, c("sample","genotype","tissue","age_months","sex")]
 ## Add gene names from Ensemble ID
 
 ```{r}
-ensembl_ids <- rownames(counts_raw)
+#| eval: false
+#| include: false
 
+ensembl_ids <- rownames(counts_raw)
+ensembl_ids <- unique(ensembl_ids)
 library(AnnotationDbi)
 library(org.Mm.eg.db)
 
@@ -471,7 +478,7 @@ cat(sprintf("edgeR significant DE genes:\n  UP:   %d\n  DOWN: %d\n  Total: %d\n"
 knitr::kable(
   head(edger_res[edger_res$significant, c("gene","logFC","logCPM","F","PValue","FDR","direction")], 20),
   caption = "Top 20 edgeR significant genes (ranked by PValue)"
-)
+) |> kableExtra::kable_paper()
 ```
 
 ## 7.3 Volcano plot

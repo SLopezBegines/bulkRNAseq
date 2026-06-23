@@ -1,11 +1,9 @@
-# ==============================================================================
 # Data Import — bulkRNAseq Pipeline
 # GSE168137: 5xFAD mouse model bulk RNA-seq
 #
 # Column name convention:
 #   5xFAD;BL6_{tissue}_{age}mon_{sex}_{id}   (transgenic)
 #   BL6_{tissue}_{age}mon_{sex}_{id}          (wildtype)
-# ==============================================================================
 
 #' Parse sample metadata encoded in GSE168137 column names
 #'
