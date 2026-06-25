@@ -289,7 +289,7 @@ plot_de_heatmap <- function(res_df, vst_obj, metadata,
 #' @param edger_res    Output of run_edger()
 #' @returns Merged data.frame with columns from both methods, suffixed _deseq2 and _edger
 merge_de_results <- function(deseq2_res, edger_res) {
-  d2 <- deseq2_res[, c("gene", "log2FoldChange", "log2FoldChange_MLE", "padj", "significant", "direction")]
+  d2 <- deseq2_res[, c("gene", "log2FoldChange", "lfcSE", "padj", "significant", "direction")]
   names(d2)[2:6] <- paste0(names(d2)[2:6], "_deseq2")
 
   er <- edger_res[, c("gene", "logFC", "FDR", "significant", "direction")]
@@ -307,15 +307,15 @@ merge_de_results <- function(deseq2_res, edger_res) {
 }
 
 #' Scatter plot comparing log2FC estimates from DESeq2 and edgeR
-plot_lfc_comparison <- function(merged_df, title = "DESeq2 vs edgeR: unshrunken log2FC (MLE)") {
-  df <- merged_df[!is.na(merged_df$log2FoldChange_MLE_deseq2) &
+plot_lfc_comparison <- function(merged_df, title = "DESeq2 vs edgeR: unshrunken log2FC") {
+  df <- merged_df[!is.na(merged_df$log2FoldChange_deseq2) &
     !is.na(merged_df$logFC_edger), ]
-  cor_val <- round(cor(df$log2FoldChange_MLE_deseq2, df$logFC_edger,
+  cor_val <- round(cor(df$log2FoldChange_deseq2, df$logFC_edger,
     use = "complete.obs"
   ), 3)
   colors <- c("Concordant" = "#4DAF4A", "Method-specific" = "#FF7F00", "NS" = "grey80")
 
-  ggplot(df, aes(x = log2FoldChange_MLE_deseq2, y = logFC_edger, colour = agreement)) +
+  ggplot(df, aes(x = log2FoldChange_deseq2, y = logFC_edger, colour = agreement)) +
     geom_point(size = 1, alpha = 0.4) +
     geom_abline(slope = 1, intercept = 0, linetype = "dashed") +
     geom_smooth(method = "lm", se = FALSE, colour = "black", linewidth = 0.6) +
