@@ -42,10 +42,6 @@ The analysis follows five modular stages: (1) data import, (2) quality control,
 are directly compared.
 
 ---
-```{r config qmd}
-
-```
-
 
 # 1. Setup
 
@@ -118,9 +114,6 @@ knitr::kable(head(meta_all[, c("sample","genotype","tissue","age_months","sex")]
 ## Add gene names from Ensemble ID
 
 ```{r}
-#| eval: false
-#| include: false
-
 ensembl_ids <- rownames(counts_raw)
 ensembl_ids <- unique(ensembl_ids)
 library(AnnotationDbi)
